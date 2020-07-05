@@ -105,7 +105,7 @@ def request_issue_creation(exception_details):
     import platform
 
     question = lib.formatter.prompt(
-        "do you want to create an anonymized issue for the caught exception", "yN"
+        "would you like to create an anonymized issue for the unhandled exception", "yN"
     )
     if question.lower().startswith("y"):
         is_newest = lib.settings.check_version(speak=False)
@@ -113,7 +113,7 @@ def request_issue_creation(exception_details):
             lib.formatter.error(
                 "whatwaf is not the newest version, in order to create an issue, please update whatwaf"
             )
-            exit(1)
+            return
 
         identifier = create_identifier(exception_details)
 
@@ -122,13 +122,15 @@ def request_issue_creation(exception_details):
                 argv_data = hide_sensitive(sys.argv, item)
         title = "Whatwaf Unhandled Exception ({})".format(identifier)
 
+        python_version = "{}.{}{}".format(sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
         issue_creation_template = {
             "title": title,
             "body": "Whatwaf version: `{}`\n"
                     "Running context: `{}`\n"
+                    "Python version: `{}`\n"
                     "Traceback: \n```\n{}\n```\n"
                     "Running platform: `{}`".format(
-                lib.settings.VERSION, argv_data, exception_details, platform.platform()
+                lib.settings.VERSION, argv_data, python_version, exception_details, platform.platform()
             )
         }
 
@@ -167,7 +169,8 @@ def request_firewall_issue_creation(path):
     request the creation and create the issue
     """
     question = lib.formatter.prompt(
-        "do you want to create an issue with the unknown firewall to possibly get it implemented", "yN"
+        "would you like to create an issue with the discovered unknown firewall to potentially "
+        "get a detection script created for it", "yN"
     )
     if question.lower().startswith("y"):
         is_newest = lib.settings.check_version(speak=False)
@@ -175,7 +178,7 @@ def request_firewall_issue_creation(path):
             lib.formatter.error(
                 "whatwaf is currently not the newest version, please update to request a firewall script creation"
             )
-            exit(1)
+            return
 
         # gonna read a chunk of it instead of one line
         chunk = 4096

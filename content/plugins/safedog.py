@@ -6,10 +6,10 @@ __product__ = "SafeDog WAF (SafeDog)"
 
 
 def detect(content, **kwargs):
-    headers = kwargs.get("headers", None)
+    headers = kwargs.get("headers", {})
     detection_schema = (
-        re.compile(r"(http(s)?)?(://)?(www|404|bbs|\w+)?.safedog.\w+", re.I),
-        re.compile(r"waf(.?\d+(.)?\d+)", re.I),
+        re.compile(r"(http(s)?)?(://)?(www|404|bbs|\w+)?.safedog.\w", re.I),
+        re.compile(r"waf(.?\d+.?\d+)", re.I),
     )
     for detection in detection_schema:
         if detection.search(content) is not None:

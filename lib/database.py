@@ -2,6 +2,7 @@ import os
 import sqlite3
 
 import lib.settings
+import lib.formatter
 
 
 def initialize():
@@ -9,7 +10,7 @@ def initialize():
     initialize the database and the HOME directory (~/.whatwaf)
     """
     if not os.path.exists(lib.settings.DATABASE_FILENAME):
-        # idk why but apparently i never create the directory :|
+        # idk why but apparently i never created the directory :|
         if not os.path.exists(lib.settings.HOME):
             try:
                 os.makedirs(lib.settings.HOME)
@@ -37,7 +38,7 @@ def initialize():
 
 def fetch_data(cursor, is_payload=True):
     """
-    fetch all payloads out of the database
+    fetch all payloads or URLs out of the database
     """
     try:
         if is_payload:
@@ -74,7 +75,7 @@ def insert_payload(payload, cursor):
 def insert_url(netloc, working_tampers, identified_protections,  cursor, webserver=None, return_found=False):
     """
     insert the URL into the database for future use, will only insert the netlock of the URL for easier
-    caching and easier checking, so multiple netlocks of the same URL can hypothetically be used IE:
+    caching and quicker checking, so multiple netlocks of the same URL can hypothetically be used IE:
      - www.foo.bar
      - ftp.foo.bar
      - ssh.foo.bar
@@ -95,7 +96,10 @@ def insert_url(netloc, working_tampers, identified_protections,  cursor, webserv
         if not is_inserted:
             if len(identified_protections) > 1:
                 if lib.settings.UNKNOWN_FIREWALL_NAME in identified_protections:
-                    identified_protections.remove(identified_protections.index(lib.settings.UNKNOWN_FIREWALL_NAME))
+                    try:
+                        identified_protections.remove(identified_protections.index(lib.settings.UNKNOWN_FIREWALL_NAME))
+                    except:
+                        pass
                 identified_protections = ",".join(identified_protections)
             else:
                 try:

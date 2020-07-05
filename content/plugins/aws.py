@@ -7,7 +7,7 @@ __product__ = "Amazon Web Services Web Application Firewall (Amazon)"
 
 
 def detect(content, **kwargs):
-    headers = kwargs.get("headers", None)
+    headers = kwargs.get("headers", {})
     content = str(content)
     detection_schema = (
         re.compile(r"<RequestId>[0-9a-zA-Z]{16,25}<.RequestId>", re.I),
@@ -15,7 +15,7 @@ def detect(content, **kwargs):
         re.compile(r"\baws(alb)?.", re.I),
         re.compile(r"x.amz.id.\d+", re.I),
         re.compile(r"x.amz.request.id", re.I),
-        re.compile(r"amazon.\d+", re.I)
+        re.compile(r"amazon(aws.com)?(\d+)?", re.I),
     )
     for detection in detection_schema:
         if detection.search(content) is not None:

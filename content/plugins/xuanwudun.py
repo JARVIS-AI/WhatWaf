@@ -6,9 +6,9 @@ __product__ = "Xuanwudun WAF"
 
 def detect(content, **kwargs):
     content = str(content)
-    status = kwargs.get("status", None)
+    status = kwargs.get("status", 0)
     detection_schema = (
-        re.compile("<.+.class=.(db)?waf(.)?(-row.)?>", re.I),
+        re.compile(r"class=.(db)?waf.?(-row.)?>", re.I),
     )
     for detection in detection_schema:
         if detection.search(content) is not None:

@@ -13,7 +13,7 @@ try:
     import queue
 except ImportError:
     import Queue as queue
-    
+
 import lib.settings
 import lib.formatter
 import lib.database
@@ -27,17 +27,23 @@ class ScriptQueue(object):
     or to identify the possible bypass
     """
 
-    def __init__(self, files_path, import_path, verbose=False):
+    def __init__(self, files_path, import_path, verbose=False, is_tamper=False):
         self.files = files_path
         self.path = import_path
         self.verbose = verbose
         self.skip_schema = ("__init__.py", ".pyc", "__")
         self.script_type = ''.join(self.path.split(".")[1].split())[:-1]
+        self.is_tamper = is_tamper
 
     def load_scripts(self):
         retval = []
-        file_list = [f for f in os.listdir(self.files) if not any(s in f for s in self.skip_schema)]
-        for script in sorted(file_list):
+        if self.is_tamper:
+            file_list = lib.settings.shuffle_list(
+                [f for f in os.listdir(self.files) if not any(s in f for s in self.skip_schema)]
+            )
+        else:
+            file_list = [f for f in os.listdir(self.files) if not any(s in f for s in self.skip_schema)]
+        for script in file_list:
             script = script[:-3]
             if self.verbose:
                 lib.formatter.debug("loading {} script '{}'".format(self.script_type, script))
@@ -52,8 +58,7 @@ class ScriptQueue(object):
 class DetectionQueue(object):
 
     """
-    Queue to add the HTML requests into, it will return a `tuple` containing status, html, and headers along with
-    the amount of requests that have been made
+    Queue to add the HTML requests into, it will return a `tuple` containing status, html, and headers
     """
 
     def __init__(self, url, payloads, **kwargs):
@@ -172,14 +177,17 @@ class DetectionQueue(object):
                 self.response_retval.append(None)
 
                 if self.save_fingerprint:
-                    lib.settings.create_fingerprint(
-                        self.url,
-                        self.response_retval[0][2],
-                        self.response_retval[0][1],
-                        self.response_retval[0][3],
-                        req_data=self.response_retval[0][0],
-                        speak=True
-                    )
+                    try:
+                        lib.settings.create_fingerprint(
+                            self.url,
+                            self.response_retval[0][2],
+                            self.response_retval[0][1],
+                            self.response_retval[0][3],
+                            req_data=self.response_retval[0][0],
+                            speak=True
+                        )
+                    except Exception:
+                        lib.formatter.error("unable to save fingerprint something went wrong")
 
     def threaded_get_response(self):
         strip_url = lambda x: (x.split("/")[0], x.split("/")[2])
@@ -238,9 +246,10 @@ def get_working_tampers(url, norm_response, payloads, **kwargs):
     max_successful_payloads = kwargs.get("tamper_int", 5)
     throttle = kwargs.get("throttle", 0)
     req_timeout = kwargs.get("timeout", 15)
+
     if req_timeout is None:
         lib.formatter.warn(
-            "issue occured and the timeout resolved to None, defaulting to 15", minor=True
+            "something happened and the timeout resolved to `None`, defaulting to 15", minor=True
         )
         req_timeout = 15
 
@@ -253,7 +262,7 @@ def get_working_tampers(url, norm_response, payloads, **kwargs):
     )
     lib.formatter.info("loading payload tampering scripts")
     tampers = ScriptQueue(
-        lib.settings.TAMPERS_DIRECTORY, lib.settings.TAMPERS_IMPORT_TEMPLATE, verbose=verbose
+        lib.settings.TAMPERS_DIRECTORY, lib.settings.TAMPERS_IMPORT_TEMPLATE, verbose=verbose, is_tamper=True
     ).load_scripts()
 
     if max_successful_payloads > len(tampers):
@@ -265,6 +274,7 @@ def get_working_tampers(url, norm_response, payloads, **kwargs):
 
     working_tampers = set()
     _, normal_status, _, _ = norm_response
+    good_tamper_paths = []
     lib.formatter.info("running tampering bypass checks")
     for tamper in tampers:
         load = tamper
@@ -274,31 +284,43 @@ def get_working_tampers(url, norm_response, payloads, **kwargs):
             except:
                 pass
         for vector in payloads:
-            vector = tamper.tamper(vector)
-            if verbose:
-                lib.formatter.payload(vector.strip())
-            payloaded_url = "{}{}".format(url, vector)
-            _, status, html, _ = lib.settings.get_page(
-                payloaded_url, agent=agent, proxy=proxy, verbose=verbose, provided_headers=provided_headers,
-                throttle=throttle, timeout=req_timeout
-            )
-            if not find_failures(str(html), failed_schema):
+            try:
+                vector = tamper.tamper(vector)
                 if verbose:
-                    if status != 0:
-                        lib.formatter.debug("response code: {}".format(status))
-                    else:
-                        lib.formatter.debug("unknown response detected")
-                if status != 404:
-                    if status == 200:
-                        try:
-                            working_tampers.add((tamper.__type__, tamper.tamper(tamper.__example_payload__), load))
-                        except:
-                            pass
-            else:
-                if verbose:
-                    lib.formatter.warn("failure found in response content")
-            if len(working_tampers) == max_successful_payloads:
-                break
+                    lib.formatter.payload(vector.strip())
+                payloaded_url = "{}{}".format(url, vector)
+                _, status, html, _ = lib.settings.get_page(
+                    payloaded_url, agent=agent, proxy=proxy, verbose=verbose, provided_headers=provided_headers,
+                    throttle=throttle, timeout=req_timeout
+                )
+                if not find_failures(str(html), failed_schema):
+                    if verbose:
+                        if status != 0:
+                            lib.formatter.debug("response code: {}".format(status))
+                        else:
+                            lib.formatter.debug("unknown response detected")
+                    if status != 404:
+                        if status == 200:
+                            try:
+                                if load not in good_tamper_paths:
+                                    working_tampers.add((tamper.__type__, tamper.tamper(tamper.__example_payload__), load))
+                                    good_tamper_paths.append(load)
+                            except:
+                                pass
+                else:
+                    if verbose:
+                        lib.formatter.warn("failure found in response content")
+                if len(working_tampers) == max_successful_payloads:
+                    break
+            # simple sloppy little fix for issue #376, we'll just continue if we hit the problem
+            # i honestly have no idea if this will cause future issues or not
+            except RuntimeError:
+                pass
+            except Exception as e:
+                if "'NoneType' object is not iterable" in str(e):
+                    pass
+                else:
+                    raise e.__class__("Exception caught: {} ~~> {}".format(e.__class__, e.message))
         if len(working_tampers) == max_successful_payloads:
             break
     return working_tampers
@@ -310,6 +332,8 @@ def check_if_matched(normal_resp, payload_resp, step=1, verified=5):
     """
     # five seems like a good number for verification status, you can change it
     # by using the `--verify-num` flag
+    if verified is None:
+        verified = 5
     matched = 0
     response = set()
     _, norm_status, norm_html, norm_headers = normal_resp
@@ -389,6 +413,7 @@ def detection_main(url, payloads, cursor, **kwargs):
     threaded = kwargs.get("threaded", None)
     force_file_creation = kwargs.get("force_file_creation", False)
     save_file_copy_path = kwargs.get("save_copy_of_file", None)
+    batch = kwargs.get("batch", False)
 
     current_url_netloc = urlparse.urlparse(url).netloc
 
@@ -401,7 +426,8 @@ def detection_main(url, payloads, cursor, **kwargs):
     __check_custom_placement = lambda u: "*" in u
     if __check_custom_placement(url):
         choice = lib.formatter.prompt(
-            "custom placement marker found in URL `*` would you like to use it to place the attacks", "yN"
+            "custom placement marker found in URL `*` would you like to use it to place the attacks", "yN",
+            batch=batch
         )
         if choice.lower().startswith("y"):
             use_placement = True
@@ -482,14 +508,18 @@ def detection_main(url, payloads, cursor, **kwargs):
     )
 
     if check_server:
-        found = None
-        for resp in responses:
-            headers = resp[-1]
-        for k in headers.keys():
-            if k.lower() == "server":
-                found = headers[k]
-                break
-        if found is None:
+        try:
+            for resp in responses:
+                headers = resp[-1]
+            found = headers.get(lib.settings.HTTP_HEADER.SERVER, None)
+            if found is None:
+                for k in headers.keys():
+                    if "server" in k.lower():
+                        found = headers[k]
+                        break
+        except Exception:
+            found = None
+        if found is None or str(found).isspace() or str(found) == "":
             lib.formatter.warn("unable to determine web server")
         else:
             lib.formatter.success("web server determined as: {}".format(found))
@@ -497,8 +527,7 @@ def detection_main(url, payloads, cursor, **kwargs):
     else:
         found_webserver = None
 
-    # plus one for lib.settings.get_page call
-    request_count = len(responses) + 1
+    # plus one for lib.settings.get_page call (i honestly dont even know wtf this means LOL)
     amount_of_products = 0
     detected_protections = set()
 
@@ -513,16 +542,23 @@ def detection_main(url, payloads, cursor, **kwargs):
         item = item if item is not None else normal_response
         _, status, html, headers = item
         for detection in loaded_plugins:
+            if verbose:
+                lib.formatter.debug("running {}".format(detection))
             try:
-                if detection.detect(str(html), status=status, headers=headers) is True:
-                    temp.append(detection.__product__)
-                    if detection.__product__ == lib.settings.UNKNOWN_FIREWALL_NAME and len(temp) == 1 and status != 0:
-                        lib.formatter.warn("unknown firewall detected saving fingerprint to log file")
-                        path = lib.settings.create_fingerprint(url, html, status, headers)
-                        return lib.firewall_found.request_firewall_issue_creation(path)
-                    else:
-                        detected_protections.add(detection.__product__)
-            except Exception:
+                if status is not None or headers is not None or html is not None:
+                    if detection.detect(str(html), status=status, headers=headers) is True:
+                        temp.append(detection.__product__)
+                        if detection.__product__ == lib.settings.UNKNOWN_FIREWALL_NAME and len(temp) == 1 and status != 0:
+                            lib.formatter.warn("unknown firewall detected saving fingerprint to log file")
+                            path = lib.settings.create_fingerprint(url, html, status, headers)
+                            return lib.firewall_found.request_firewall_issue_creation(path)
+                        else:
+                            detected_protections.add(detection.__product__)
+            except Exception as e:
+                if verbose:
+                    lib.formatter.warn("caught exception type: '{}' running module: {}".format(
+                        e.__class__, detection
+                    ))
                 pass
     if len(detected_protections) > 0:
         if lib.settings.UNKNOWN_FIREWALL_NAME not in detected_protections:
@@ -532,10 +568,15 @@ def detection_main(url, payloads, cursor, **kwargs):
                 amount_of_products += 1
     if amount_of_products == 1:
         detected_protections = list(detected_protections)[0]
-        lib.formatter.success(
-            "detected website protection identified as '{}', searching for bypasses".format(detected_protections)
+        lib.formatter.discover(
+            "detected website protection identified as '{}'".format(detected_protections)
         )
         if not skip_bypass_check:
+            lib.formatter.info("starting bypass analysis")
+            if threaded is not None:
+                lib.formatter.warn(
+                    "in order to accurately perform bypass analysis threading will be dropped to a single thread"
+                )
             found_working_tampers = get_working_tampers(
                 url, normal_response, payloads, proxy=proxy, agent=agent, verbose=verbose,
                 tamper_int=tamper_int, provided_headers=provided_headers, throttle=throttle,
@@ -556,7 +597,7 @@ def detection_main(url, payloads, cursor, **kwargs):
                 current_url_netloc, found_working_tampers, detected_protections, cursor, webserver=found_webserver
             )
         else:
-            lib.formatter.warn("skipping bypass checks")
+            lib.formatter.warn("skipping bypass analysis", minor=True)
             if formatted:
                 dict_data_output = dictify_output(url, detected_protections, [])
                 written_file_path = lib.settings.write_to_file(
@@ -635,16 +676,19 @@ def detection_main(url, payloads, cursor, **kwargs):
             )
 
     else:
-        lib.formatter.success("multiple protections identified on target{}:".format(
-            " (unknown firewall will not be displayed)" if lib.settings.UNKNOWN_FIREWALL_NAME in detected_protections else ""
-        ))
-        detected_protections = [item for item in list(detected_protections)]
-        for i, protection in enumerate(detected_protections, start=1):
+        detected_protections = [
+            item for item in list(detected_protections) if item != lib.settings.UNKNOWN_FIREWALL_NAME
+        ]
+        for protection in sorted(detected_protections):
             if not protection == lib.settings.UNKNOWN_FIREWALL_NAME:
-                lib.formatter.success("#{} '{}'".format(i, protection))
+                lib.formatter.discover("{}".format(protection))
 
         if not skip_bypass_check:
-            lib.formatter.info("searching for bypasses")
+            lib.formatter.info("starting bypass analysis")
+            if threaded is not None:
+                lib.formatter.warn(
+                    "in order to accurately perform bypass analysis threading will be dropped to a single thread"
+                )
             found_working_tampers = get_working_tampers(
                 url, normal_response, payloads, proxy=proxy, agent=agent, verbose=verbose,
                 tamper_int=tamper_int, throttle=throttle, timeout=req_timeout, provided_headers=provided_headers
@@ -664,7 +708,7 @@ def detection_main(url, payloads, cursor, **kwargs):
                 current_url_netloc, found_working_tampers, detected_protections, cursor, webserver=found_webserver
             )
         else:
-            lib.formatter.warn("skipping bypass tests")
+            lib.formatter.warn("skipping bypass analysis", minor=True)
             if formatted:
                 dict_data_output = dictify_output(url, detected_protections, [])
                 written_file_path = lib.settings.write_to_file(
@@ -679,5 +723,3 @@ def detection_main(url, payloads, cursor, **kwargs):
             )
     if inserted_into_database_results:
         lib.formatter.info("URL has been cached for future use")
-
-    return request_count

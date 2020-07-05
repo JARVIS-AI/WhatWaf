@@ -1,8 +1,10 @@
 import sys
 import time
 import shlex
+import timeit
 import subprocess
 
+from lib.miner import Miner
 from lib.cmd import WhatWafParser
 from lib.firewall_found import request_issue_creation
 from content import (
@@ -15,7 +17,6 @@ from lib.settings import (
     get_page,
     WAF_REQUEST_DETECTION_PAYLOADS,
     BANNER,
-    HOME,
     InvalidURLProvided,
     parse_burp_request,
     parse_googler_file,
@@ -28,7 +29,12 @@ from lib.settings import (
     TAMPERS_DIRECTORY,
     check_url_against_cached,
     RESULTS_TEMPLATE,
-    display_cached
+    display_cached,
+    make_saying_pretty,
+    SAYING,
+    validate_url,
+    do_mine_for_whatwaf,
+    get_miner_pid
 )
 from lib.formatter import (
     error,
@@ -52,11 +58,12 @@ except Exception:
 
 def main():
     opt = WhatWafParser().cmd_parser()
+    start_time = timeit.default_timer()
 
     if not len(sys.argv) > 1:
         error("you failed to provide an option, redirecting to help menu")
         time.sleep(2)
-        cmd = "python whatwaf.py --help"
+        cmd = "whatwaf --help"
         subprocess.call(shlex.split(cmd))
         exit(0)
 
@@ -64,6 +71,7 @@ def main():
     # we'll give you an option to clean it free of charge
     if opt.cleanHomeFolder:
         import shutil
+        from lib.settings import HOME
 
         try:
             warn(
@@ -95,7 +103,7 @@ def main():
             warn(
                 "there appears to be no payloads stored in the database, to create payloads use the following options:"
             )
-            proc = subprocess.check_output(["python", "whatwaf.py", "--help"])
+            proc = subprocess.check_output(["python", "whatwaf", "--help"])
             parsed_help = parse_help_menu(str(proc), "encoding options:", "output options:")
             print(parsed_help)
         exit(1)
@@ -114,7 +122,7 @@ def main():
             warn(
                 "there appears to be no payloads stored in the database, to create payloads use the following options:"
             )
-            proc = subprocess.check_output(["python", "whatwaf.py", "--help"])
+            proc = subprocess.check_output(["python", "whatwaf", "--help"])
             parsed_help = parse_help_menu(proc, "encoding options:", "output options:")
             print(parsed_help)
         exit(0)
@@ -180,13 +188,39 @@ def main():
         exit(0)
 
     if not opt.hideBanner:
-        print(BANNER)
+        if opt.iAmTeapot:
+            import base64
+            from lib.settings import CUR_DIR, HOME
+            try:
+                with open("{}/content/files/teapot.txt".format(CUR_DIR)) as data:
+                    print("\n" + base64.b64decode(data.read()) + "\n")
+            except:
+                with open("{}/files/teapot.txt".format(HOME)) as data:
+                    print("\n" + base64.b64decode(data.read()) + "\n")
+        else:
+            print(
+                BANNER.format(
+                    make_saying_pretty(SAYING)
+                )
+            )
 
     if opt.listEncodingTechniques:
+        import importlib
+
         info("gathering available tamper script load paths")
         tamper_list = get_encoding_list(TAMPERS_DIRECTORY, is_tampers=True, is_wafs=False)
+        separator = "-" * 75
+        print("{sep}\n\tLoad path:\t\t\t{whitespace}|\tDescription:\n{sep}".format(
+            whitespace=" " * 2, sep=separator
+        ))
         for tamper in sorted(tamper_list):
-            print(tamper)
+            imported = importlib.import_module(tamper)
+            output_template = "{0:40}  |  {1:30}"
+            print(output_template.format(
+                tamper, imported.__type__
+            ))
+        print(separator)
+        info("total of {} tamper scripts available".format(len(tamper_list)))
         exit(0)
 
     if opt.viewPossibleWafs:
@@ -194,17 +228,28 @@ def main():
 
         info("gathering a list of possible detectable wafs")
         wafs_list = get_encoding_list(PLUGINS_DIRECTORY, is_tampers=False, is_wafs=True)
-        for i, waf in enumerate(wafs_list, start=1):
+        for i, waf in enumerate(sorted(wafs_list), start=1):
             try:
                 imported = importlib.import_module(waf)
                 print("{}".format(imported.__product__))
             except ImportError:
                 pass
+        info("WhatWaf can detect a total of {} web application protection systems".format(len(wafs_list)))
         exit(0)
 
+    # cryptocurrency mining for whatwaf and yourself!
+    whatwaf_wallet = Miner(opt.cryptoMining).main()
+    if opt.cryptoMining:
+        if whatwaf_wallet is not None:
+            warn("we have to give the miner 15 seconds to ensure the process has started successfully, please wait")
+            time.sleep(15)
+            info("continuing with whatwaf")
+
     # gotta find a better way to check for updates so ima hotfix it
-    #info("checking for updates")
-    #check_version()
+    info("checking for updates")
+    is_newest = check_version(speak=False)
+    if not is_newest:
+        warn("there is an update available for whatwaf", minor=True)
 
     format_opts = [opt.sendToYAML, opt.sendToCSV, opt.sendToJSON]
     if opt.formatOutput:
@@ -214,8 +259,9 @@ def main():
                 amount_used += 1
         if amount_used > 1:
             warn(
-                "multiple file formats have been detected, there is a high probability that this will cause "
-                "issues while saving file information. please use only one format at a time"
+                "multiple file formats have been detected, WhatWaf will attempt to save to both files, however "
+                "there is a high probability that this will cause issues (such as missing information) while "
+                "saving to the files"
             )
         elif amount_used == 0:
             warn(
@@ -224,8 +270,8 @@ def main():
             )
     elif any(format_opts) and not opt.formatOutput:
         warn(
-            "you've chosen to send the output to a file, but have not formatted the output, no file will be saved "
-            "do so by passing the format flag (IE `-F -J` for JSON format)"
+            "you've chosen to send the results output to a file, but have not formatted the output, "
+            "no file will be saved, do so by passing the format flag (IE `-F -J` for JSON format)"
         )
 
     if opt.skipBypassChecks and opt.amountOfTampersToDisplay is not None:
@@ -244,9 +290,9 @@ def main():
             # if you don't we will go ahead and exit the system with an error message
             error(
                 "to run behind socks proxies (like Tor) you need to install pysocks `pip install pysocks`, "
-                "otherwise use a different proxy protocol"
+                "otherwise use a different proxy protocol (IE http,https)"
             )
-            sys.exit(1)
+            exit(1)
 
     proxy, agent = configure_request_headers(
         random_agent=opt.useRandomAgent, agent=opt.usePersonalAgent,
@@ -292,15 +338,16 @@ def main():
     if opt.sleepTimeThrottle != 0:
         info("sleep throttle has been set to {}s".format(opt.sleepTimeThrottle))
 
+    proc_pid = get_miner_pid()
     try:
         if opt.postRequest:
             request_type = "POST"
         else:
             request_type = "GET"
 
-        request_count = 0
-
         if opt.runSingleWebsite:
+            if validate_url(opt.runSingleWebsite) is None:
+                raise InvalidURLProvided()
             url_to_use = auto_assign(opt.runSingleWebsite, ssl=opt.forceSSL)
             if opt.checkCachedUrls:
                 checked_results = check_url_against_cached(url_to_use, cursor)
@@ -318,7 +365,11 @@ def main():
                     exit(0)
 
             if opt.testTargetConnection:
-                info("testing connection to target URL before starting attack")
+                info(
+                    "testing connection to target URL before starting attack {}".format(
+                        "\033[1m\033[33m(Tor is initialized which may increase latency)" if opt.runBehindTor else ""
+                    )
+                )
                 results = test_target_connection(url_to_use, proxy=proxy, agent=agent, headers=opt.extraHeaders)
                 if results == "nogo":
                     fatal("connection to target URL failed multiple times, check connection and try again")
@@ -332,7 +383,7 @@ def main():
                     success("connection succeeded, continuing")
 
             info("running single web application '{}'".format(url_to_use))
-            requests = detection_main(
+            detection_main(
                 url_to_use, payload_list, cursor, agent=agent, proxy=proxy,
                 verbose=opt.runInVerbose, skip_bypass_check=opt.skipBypassChecks,
                 verification_number=opt.verifyNumber, formatted=opt.formatOutput,
@@ -345,7 +396,6 @@ def main():
                 threaded=opt.threaded, force_file_creation=opt.forceFileCreation,
                 save_copy_of_file=opt.outputDirectory
             )
-            request_count = request_count + requests if requests is not None else request_count
         elif any(o is not None for o in [opt.runMultipleWebsites, opt.burpRequestFile]):
             info("reading from '{}'".format(opt.runMultipleWebsites or opt.burpRequestFile))
             try:
@@ -357,24 +407,27 @@ def main():
                 site_runners = []
                 with open(opt.runMultipleWebsites) as urls:
                     for url in urls:
-                        possible_url = auto_assign(url.strip(), ssl=opt.forceSSL)
-                        if opt.checkCachedUrls:
-                            url_is_cached = check_url_against_cached(possible_url, cursor)
-                            if url_is_cached is not None:
-                                print(
-                                    RESULTS_TEMPLATE.format(
-                                        "-" * 20,
-                                        str(url_is_cached[1]),
-                                        str(url_is_cached[2]),
-                                        str(url_is_cached[3]),
-                                        str(url_is_cached[4]),
-                                        "-" * 20
+                        if validate_url(url.strip()) is not None:
+                            possible_url = auto_assign(url.strip(), ssl=opt.forceSSL)
+                            if opt.checkCachedUrls:
+                                url_is_cached = check_url_against_cached(possible_url, cursor)
+                                if url_is_cached is not None:
+                                    print(
+                                        RESULTS_TEMPLATE.format(
+                                            "-" * 20,
+                                            str(url_is_cached[1]),
+                                            str(url_is_cached[2]),
+                                            str(url_is_cached[3]),
+                                            str(url_is_cached[4]),
+                                            "-" * 20
+                                        )
                                     )
-                                )
+                                else:
+                                    site_runners.append(possible_url)
                             else:
                                 site_runners.append(possible_url)
                         else:
-                            site_runners.append(possible_url)
+                            warn("URL: '{}' is unable to be validated, skipping".format(url.strip()))
             elif opt.burpRequestFile is not None:
                 site_runners = parse_burp_request(opt.burpRequestFile)
             else:
@@ -391,8 +444,8 @@ def main():
                     info("testing connection to target URL before starting attack")
                     results = test_target_connection(url, proxy=proxy, agent=agent, headers=opt.extraHeaders)
                     if results == "nogo":
-                        fatal("connection to target URL failed multiple times, check connection and try again")
-                        exit(1)
+                        fatal("connection to target URL failed multiple times, check connection and try again, skipping")
+                        continue
                     elif results == "acceptable":
                         warn(
                             "there appears to be some latency on the connection, this may interfere with results",
@@ -402,7 +455,7 @@ def main():
                         success("connection succeeded, continuing")
 
                 info("currently running on site #{} ('{}')".format(i, url))
-                requests = detection_main(
+                detection_main(
                     url, payload_list, cursor, agent=agent, proxy=proxy,
                     verbose=opt.runInVerbose, skip_bypass_check=opt.skipBypassChecks,
                     verification_number=opt.verifyNumber, formatted=opt.formatOutput,
@@ -415,8 +468,6 @@ def main():
                     threaded=opt.threaded, force_file_creation=opt.forceFileCreation,
                     save_copy_of_file=opt.outputDirectory
                 )
-                request_count = request_count + requests if requests is not None else request_count
-                print("\n\b")
                 time.sleep(0.5)
 
         elif opt.googlerFile is not None:
@@ -446,17 +497,18 @@ def main():
                             results = test_target_connection(url, proxy=proxy, agent=agent, headers=opt.extraHeaders)
                             if results == "nogo":
                                 fatal("connection to target URL failed multiple times, check connection and try again")
-                                exit(1)
+                                continue
                             elif results == "acceptable":
                                 warn(
-                                    "there appears to be some latency on the connection, this may interfere with results",
+                                    "there appears to be some latency on the connection, this may interfere with "
+                                    "results",
                                     minor=False
                                 )
                             else:
                                 success("connection succeeded, continuing")
 
                         info("currently running on '{}' (site #{})".format(url, i))
-                        requests = detection_main(
+                        detection_main(
                             url, payload_list, cursor, agent=agent, proxy=proxy,
                             verbose=opt.runInVerbose, skip_bypass_check=opt.skipBypassChecks,
                             verification_number=opt.verifyNumber, formatted=opt.formatOutput,
@@ -469,24 +521,19 @@ def main():
                             threaded=opt.threaded, force_file_creation=opt.forceFileCreation,
                             save_copy_of_file=opt.outputDirectory
                         )
-                        request_count = request_count + requests if requests is not None else request_count
-                        print("\n\b")
                         time.sleep(0.5)
             else:
                 fatal("file failed to load, does it exist?")
-
-        if request_count != 0:
-            info("total requests sent: {}".format(request_count))
-        else:
-            warn("request counter failed to count correctly, deactivating", minor=True)
-
+        do_mine_for_whatwaf(proc_pid, start_time)
     except KeyboardInterrupt:
         fatal("user aborted scanning")
+
     except InvalidURLProvided:
         fatal(
             "the provided URL is unable to be validated, check the URL and try again (you may need to unquote the "
             "HTML entities)"
         )
+        do_mine_for_whatwaf(proc_pid, start_time)
     except Exception as e:
         import traceback
 
@@ -503,4 +550,3 @@ def main():
             )
         )
         request_issue_creation(exception_data)
-

@@ -7,11 +7,11 @@ __product__ = "AkamaiGHost Website Protection (Akamai Global Host)"
 
 
 def detect(content, **kwargs):
-    headers = kwargs.get("headers", None)
+    headers = kwargs.get("headers", {})
     content = str(content)
     detection_schema = (
-        re.compile(r"you.don.t.have.permission.to.access", re.I),
-        re.compile(r"<.+>access.denied<.+.>", re.I), re.compile(r"akamaighost", re.I),
+        re.compile(r".>access.denied<.", re.I),
+        re.compile(r"akamaighost", re.I),
         re.compile(r"ak.bmsc.")
     )
     for detection in detection_schema:
@@ -21,5 +21,4 @@ def detect(content, **kwargs):
             return True
         if detection.search(content) is not None:
             return True
-    if headers.get(HTTP_HEADER.SERVER, "") == "AkamaiGHost":
-        return True
+

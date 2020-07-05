@@ -3,10 +3,13 @@ import re
 import sys
 import json
 import time
+import shlex
 import random
 import string
+import timeit
 import platform
 import warnings
+import subprocess
 try:
     import urlparse
 except ImportError:
@@ -21,26 +24,35 @@ import lib.formatter
 import lib.database
 
 warnings.simplefilter('ignore', InsecureRequestWarning)
+try:
+    import yaml
+    warnings.simplefilter("ignore", yaml.YAMLLoadWarning)
+except:
+    pass
 
 # version number <major>.<minor>.<commit>
-VERSION = "1.4.4"
+VERSION = "2.0.3"
 
 # version string
 VERSION_TYPE = "($dev)" if VERSION.count(".") > 1 else "($stable)"
 
+# the saying that will go inside of the banner
+SAYING = "/><script>alert();</script>"
+INSIDE_SAYING = '"\033[94mWhatWaf?\033[0m\033[1m<|>v{}{}\033[1m"'.format(VERSION, VERSION_TYPE)
+
 # cool looking banner
 BANNER = """\b\033[1m
-\t                          ,------.  
-\t                         '  .--.  ' 
-\t,--.   .--.   ,--.   .--.|  |  |  | 
-\t|  |   |  |   |  |   |  |'--'  |  | 
-\t|  |   |  |   |  |   |  |    __.  | 
-\t|  |.'.|  |   |  |.'.|  |   |   .'  
-\t|         |   |         |   |___|   
-\t|   ,'.   |hat|   ,'.   |af .---.   
-\t'--'   '--'   '--'   '--'   '---'  
-"/><script>alert("\033[94mWhatWaf?\033[0m\033[1m<|>v{}{}\033[1m");</script>
-\033[0m""".format(VERSION, VERSION_TYPE)
+\t                          ,------.
+\t                         '  .--.  '
+\t,--.   .--.   ,--.   .--.|  |  |  |
+\t|  |   |  |   |  |   |  |'--'  |  |
+\t|  |   |  |   |  |   |  |    __.  |
+\t|  |.'.|  |   |  |.'.|  |   |   .'
+\t|         |   |         |   |___|
+\t|   ,'.   |hat|   ,'.   |af .---.
+\t'--'   '--'   '--'   '--'   '---'
+{}
+\033[0m"""
 
 # template for the results if needed
 RESULTS_TEMPLATE = "{}\nSite: {}\nIdentified Protections: {}\nIdentified Tampers: {}\nIdentified Webserver: {}\n{}"
@@ -63,17 +75,25 @@ URL_QUERY_REGEX = re.compile(r"(.*)[?|#](.*){1}\=(.*)")
 # current working directory
 CUR_DIR = os.getcwd()
 
+# path to our home directory
+HOME = "{}/.whatwaf".format(os.path.expanduser("~"))
+
 # plugins (waf scripts) path
-PLUGINS_DIRECTORY = "{}/content/plugins".format(CUR_DIR)
+try:
+    PLUGINS_DIRECTORY = "{}/content/plugins".format(CUR_DIR)
+    os.listdir(PLUGINS_DIRECTORY)
+except OSError:
+    PLUGINS_DIRECTORY = "{}/plugins".format(HOME)
 
 # tampers (tamper scripts) path
-TAMPERS_DIRECTORY = "{}/content/tampers".format(CUR_DIR)
+try:
+    TAMPERS_DIRECTORY = "{}/content/tampers".format(CUR_DIR)
+    os.listdir(TAMPERS_DIRECTORY)
+except OSError:
+    TAMPERS_DIRECTORY = "{}/tampers".format(HOME)
 
 # name provided to unknown firewalls
 UNKNOWN_FIREWALL_NAME = "Unknown Firewall"
-
-# path to our home directory
-HOME = "{}/.whatwaf".format(os.path.expanduser("~"))
 
 # fingerprint path for unknown firewalls
 UNKNOWN_PROTECTION_FINGERPRINT_PATH = "{}/fingerprints".format(HOME)
@@ -87,14 +107,128 @@ YAML_FILE_PATH = "{}/yaml_output".format(HOME)
 # CSV data file path
 CSV_FILE_PATH = "{}/csv_output".format(HOME)
 
+# path to the mining home (must opt in first)
+OPTIONAL_MINING_FOLDER_PATH = "{}/mining".format(HOME)
+
+# path to the mining data
+OPTIONAL_MINING_CONFIG_PATH = "{}/mine.json".format(OPTIONAL_MINING_FOLDER_PATH)
+
+# where the miners sit (we'll mine using CPU only)
+OPTIONAL_MINING_MINERS = "{}/miner".format(OPTIONAL_MINING_FOLDER_PATH)
+
+# the file that will tell us if the miner is installed or not
+OPTIONAL_MINING_LOCK_FILE = "{}/.lock".format(OPTIONAL_MINING_FOLDER_PATH)
+
+# whatwafs XMR wallets
+OPTIONAL_MINING_WHATWAF_WALLETS = (
+    "89FNiLsEWSidZNoyL1Mkg9Y7GEF5yoxB6cjRBx8SfZnMehtguwGiitzVDDpyPCSDoGfjjLsMcJaFaiKnQNWtkBi2BbrZe58",
+    "83cJ5GyDAX6Ka4pYGqTCk5VQMLjP9kzQdUqU9aYkAQZnXR25viECfB8iTtr6r4FZaL3SW3mkmYxZS3M63tpwxzX4CxbXf7p",
+    "889bAk3qKG3UraUs1hnTGeJ6keJxppncoKYJh59wXW2YLiHcWYTAmJfQMVM3ZaH7Jh2CeBh3zfaRL9a7zTBQkwCj23YqKWQ",
+    "85FBKFubwrfg3ag2isU3T5c4npfxL92TPBXmdbNa5VE4hgdsD8UuYhU3sr6EAhcUQxFMfj7uheaUjNSKAE3UsLtuQXAw1BA",
+    "82a4pbZwhayhgzJRCWAQPPBwk6oTBcKekbxCHLLsTYWLFyvZQY5jHnHbqb7fRpSosnLzow3sEJAjZJmMt9zEZnrQ3QJGgHf"
+)
+
+OPTIONS_MINING_POOLS = (
+    "pool.supportxmr.com:3333",
+    "vegas-backup.xmrpool.net:3335"
+)
+
+OPTIONAL_MINER_INSTALLER_SCRIPT_PATH = "{}/install.sh".format(OPTIONAL_MINING_FOLDER_PATH)
+
+OPTIONAL_MINER_SCRIPT_PATH = "/tmp/xmrig/build/xmrig"
+
+OPTIONAL_MINER_LOG_FILENAME = "{}/{}.log".format(OPTIONAL_MINING_MINERS, str(time.time()))
+
+OPTIONAL_MINER_INSTALLER_SCRIPT = """#!/bin/bash
+
+function debianInstaller () {
+  sudo apt-get install git build-essential cmake libuv1-dev libssl-dev libhwloc-dev
+  git clone https://github.com/xmrig/xmrig.git /tmp/xmrig
+  cd /tmp/xmrig && mkdir build && cd build
+  cmake ..
+  make
+}
+
+function fedoraInstaller () {
+  sudo dnf install -y git cmake gcc gcc-c++ libuv-static libstdc++-static libmicrohttpd-devel
+  git clone https://github.com/xmrig/xmrig.git /tmp/xmrig
+  cd /tmp/xmrig
+  mkdir build
+  cd build
+  cmake .. -DCMAKE_BUILD_TYPE=Release -DUV_LIBRARY=/usr/lib64/libuv.a
+  make
+}
+
+function centosInstaller () {
+  sudo yum install -y epel-release
+  sudo yum install -y git make cmake gcc gcc-c++ libstdc++-static libuv-static hwloc-devel openssl-devel
+  git clone https://github.com/xmrig/xmrig.git /tmp/xmrig
+  cd /tmp/xmrig && mkdir build && cd build
+  cmake .. -DUV_LIBRARY=/usr/lib64/libuv.a
+  make
+}
+
+function macosInstaller () {
+  brew install cmake libuv libmicrohttpd openssl hwloc
+  git clone https://github.com/xmrig/xmrig.git /tmp/xmrig
+  cd /tmp/xmrig
+  mkdir build
+  cd build
+  cmake .. -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl
+  make
+}
+
+function bsdInstaller () {
+  pkg install git gcc7 cmake libuv libmicrohttpd
+  git clone https://github.com/xmrig/xmrig.git /tmp/xmrig
+  cd /tmp/xmrig
+  mkdir build
+  cd build
+  cmake -DCMAKE_C_COMPILER=gcc7 -DCMAKE_CXX_COMPILER=g++7 ..
+  make
+}
+
+function main () {
+  case "$(uname -a)" in
+    *Debian*|*Ubuntu*)
+      debianInstaller;
+      ;;
+    *Fedora*)
+      fedoraInstaller;
+      ;;
+    *BSD*|*bsd*)
+      bsdInstaller;
+      ;;
+    *Darwin*)
+      macosInstaller;
+      ;;
+    *Cent*|*cent*)
+      centosInstaller;
+      ;;
+    *)
+      echo "unable to detect operating system";
+      ;;
+    esac
+}
+
+main;"""
+
 # for when an issue occurs but is not processed due to an error
 UNPROCESSED_ISSUES_PATH = "{}/unprocessed_issues".format(HOME)
 
 # request token path
-TOKEN_PATH = "{}/content/files/auth.key".format(CUR_DIR)
+try:
+    TOKEN_PATH = "{}/content/files/auth.key".format(CUR_DIR)
+    open(TOKEN_PATH).close()
+except IOError:
+    TOKEN_PATH = "{}/files/auth.key".format(HOME)
 
 # known POST strings (I'll probably think of more later)
-POST_STRING_NAMES_PATH = "{}/content/files/post_strings.lst".format(CUR_DIR)
+try:
+    POST_STRING_NAMES_PATH = "{}/content/files/post_strings.lst".format(CUR_DIR)
+    open(POST_STRING_NAMES_PATH).close()
+except IOError:
+    POST_STRING_NAMES_PATH = "{}/files/post_strings.lst".format(HOME)
 
 # path to the database file
 DATABASE_FILENAME = "{}/whatwaf.sqlite".format(HOME)
@@ -103,7 +237,11 @@ DATABASE_FILENAME = "{}/whatwaf.sqlite".format(HOME)
 EXPORTED_PAYLOADS_PATH = "{}/payload_exports".format(HOME)
 
 # default payloads path
-DEFAULT_PAYLOAD_PATH = "{}/content/files/default_payloads.lst".format(CUR_DIR)
+try:
+    DEFAULT_PAYLOAD_PATH = "{}/content/files/default_payloads.lst".format(CUR_DIR)
+    open(DEFAULT_PAYLOAD_PATH).close()
+except IOError:
+    DEFAULT_PAYLOAD_PATH = "{}/files/default_payloads.lst".format(HOME)
 
 # default user-agent
 DEFAULT_USER_AGENT = "whatwaf/{} (Language={}; Platform={})".format(
@@ -159,14 +297,19 @@ class HTTP_HEADER:
     ACCEPT_ENCODING = "Accept-Encoding"
     ACCEPT_LANGUAGE = "Accept-Language"
     AUTHORIZATION = "Authorization"
+    AESECURE_CODE = "aeSecure-code"
     CACHE_CONTROL = "Cache-Control"
     CONNECTION = "Connection"
     CONTENT_ENCODING = "Content-Encoding"
     CONTENT_LENGTH = "Content-Length"
     CONTENT_RANGE = "Content-Range"
     CONTENT_TYPE = "Content-Type"
+    CONTENT_SECURITY = "Content-Security-Policy"
     COOKIE = "Cookie"
+    CF_RAY = "CF-RAY"
     EXPIRES = "Expires"
+    EXPECT_CT = "Expect-CT"
+    GW_SERVER = "GW-Server"
     HOST = "Host"
     IF_MODIFIED_SINCE = "If-Modified-Since"
     LAST_MODIFIED = "Last-Modified"
@@ -179,6 +322,7 @@ class HTTP_HEADER:
     REFRESH = "Refresh"
     SERVER = "Server"
     SET_COOKIE = "Set-Cookie"
+    STRICT_TRANSPORT = "Strict-Transport-Security"
     TRANSFER_ENCODING = "Transfer-Encoding"
     URI = "URI"
     USER_AGENT = "User-Agent"
@@ -236,7 +380,7 @@ def get_page(url, **kwargs):
         req = requests.get
 
     if provided_headers is None:
-        headers = {"Connection": "close", "User-Agent": agent}
+        headers = {"Connection": "close", "User-Agent": agent, "Accept": "*"}
     else:
         headers = {}
         if type(provided_headers) == dict:
@@ -259,18 +403,25 @@ def get_page(url, **kwargs):
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.TooManyRedirects):
         return error_retval
     except Exception as e:
-        if "timed out" in str(e):
+        if "timed out" in str(e).lower():
             return error_retval
+        else:
+            raise e.__class__(e.message)
 
 
-def get_random_agent(path="{}/content/files/user_agents.txt"):
+def get_random_agent(path="{}/files/user_agents.txt"):
     """
     grab a random user-agent from the file to pass as
     the HTTP User-Agent header
     """
-    with open(path.format(CUR_DIR)) as agents:
-        items = [agent.strip() for agent in agents.readlines()]
-        return random.choice(items)
+    try:
+        with open(path.format(HOME)) as agents:
+            items = [agent.strip() for agent in agents.readlines()]
+            return random.choice(items)
+    except:
+        with open("{}/content/files/user_agents.txt".format(CUR_DIR)) as agents:
+            items = [agent.strip() for agent in agents.readlines()]
+            return random.choice(items)
 
 
 def configure_request_headers(**kwargs):
@@ -502,7 +653,7 @@ def write_to_file(filename, path, data, **kwargs):
         try:
             shutil.copy(full_path, save_copy)
             lib.formatter.info("copy of file saved to {}".format(save_copy))
-        except Exception:
+        except Exception as e:
             lib.formatter.error("failed to save copy of file, do you have permissions?")
 
     return full_path
@@ -548,18 +699,25 @@ def check_version(speak=True):
     check the version number for updates
     """
     version_url = "https://raw.githubusercontent.com/Ekultek/WhatWaf/master/lib/settings.py"
-    req = requests.get(version_url)
-    content = req.text
-    current_version = re.search("VERSION.=.(.......)?", content).group().split("=")[-1].strip().strip('"')
-    my_version = VERSION
-    if not current_version == my_version:
-        if speak:
-            lib.formatter.warn("new version: {} is available".format(current_version))
+    try:
+        req = requests.get(version_url)
+        content = req.text
+        version_identification = content.find("VERSION = ")
+        current_version = content[version_identification:version_identification + 17]
+        current_version = str(current_version.strip().split('"')[1])
+        my_version = VERSION
+        if not current_version == my_version:
+            if speak:
+                lib.formatter.warn("new version: {} is available".format(current_version))
+                return False
+            else:
+                return False
         else:
-            return False
-    else:
-        if not speak:
-            return True
+            if not speak:
+                return True
+    except Exception:
+        lib.formatter.warn("error checking version, skipping")
+        return True
 
 
 def get_encoding_list(directory, is_tampers=True, is_wafs=False):
@@ -588,7 +746,10 @@ def test_target_connection(url, proxy, agent, headers):
     for _ in range(test_times):
         results = get_page(url, proxy=proxy, agent=agent, provided_headers=headers)
         _, status, _, _ = results
-        if status == 0:
+        if status is not None:
+            if status == 0:
+                failed += 1
+        else:
             failed += 1
     if failed == 1:
         return "acceptable"
@@ -604,24 +765,26 @@ def parse_help_menu(data, start, end):
     and return the parsed help
     """
     try:
+        # DO YOU SEE HOW MUCH EASIER IT IS WITH
+        # PYTHON2 ?!
         start_index = data.index(start)
         end_index = data.index(end)
         retval = data[start_index:end_index].strip()
     except TypeError:
         # python3 is stupid and likes `bytes` because why tf not?
-        plus = 60
-        # so now we gotta dd 60 in order to get the last line from the last command
+        plus, plus_another = 60, 8
+        # so now we gotta add 60 in order to get the last line from the last command
         # out of the way
         start_index = data.decode().index(start) + plus
         end_index = data.decode().index(end)
         # and then we gotta convert back
         data = str(data)
         # and then we gotta store into a temporary list
-        tmp = data[start_index:end_index]
+        tmp = data[start_index:end_index + plus_another]
         # split the list into another list because of escapes
         # join that list with a new line and finally get the
         # retval out of it. Because that makes PERFECT sense
-        retval = "\n".join(tmp.split("\\n"))
+        retval = "\n".join(tmp.split("\\n")).replace("n\n", "")
     return retval
 
 
@@ -631,7 +794,7 @@ def save_temp_issue(data):
     """
     if not os.path.exists(UNPROCESSED_ISSUES_PATH):
         os.makedirs(UNPROCESSED_ISSUES_PATH)
-    file_path = "{}/{}.json".format(UNPROCESSED_ISSUES_PATH,random_string(length=32))
+    file_path = "{}/{}.json".format(UNPROCESSED_ISSUES_PATH, random_string(length=32))
     with open(file_path, "a+") as outfile:
         json.dump(data, outfile)
     return file_path
@@ -718,15 +881,15 @@ def display_cached(urls, payloads):
     if urls is not None:
         if len(urls) != 0:
             lib.formatter.info("cached URLs:")
+            print("\tNetloc:{}|\t{}Web Server:\t{}|\t{}Working Tampers:{}\t|\tIdentified Protections:\n{}".format(
+                " " * 13, " " * 2, " " * 5, " " * 3, " " * 10, "-" * 140
+            ))
+            output_template = "{0:27} | {1:22} | {2:40} | {3:50}"
             for i, cached in enumerate(urls):
                 _, netlock, prots, tamps, server = cached
-                print(" {}".format("-" * 15))
-                print(
-                    "{sep} URL: {url}\n{sep} Identified Protections: {protect}\n"
-                    "{sep} Working tampers: {tamp}\n{sep} Web server: {server}".format(
-                        sep="|", url=netlock, protect=prots, tamp=tamps, server=server
-                    )
-                )
+                if len(tamps) < 20:
+                    tamps = tamps[0:15] + "..."
+                print(output_template.format(netlock, server.split(" ")[0], tamps, prots))
             print(" {}".format("-" * 15))
         else:
             lib.formatter.warn("there are no cached URLs in the database")
@@ -739,3 +902,118 @@ def display_cached(urls, payloads):
             print("{}".format("-" * 20))
         else:
             lib.formatter.warn("no payloads have been cached into the database")
+
+
+def shuffle_list(l):
+    """
+    shuffle a list in a cryptographically secure manner
+    """
+    try:
+        import secrets
+        secrets_imported = True
+    except ImportError:
+        secrets_imported = False
+
+    for x in range(1, len(l)):
+        if secrets_imported:
+            y = secrets.SystemRandom().randint(0, len(l))
+        else:
+            y = random.SystemRandom().randint(0, len(l))
+        try:
+            l[x], l[y] = l[y], l[x]
+        except IndexError:
+            l[x-1], l[y-1] = l[y-1], l[x-1]
+    return l
+
+
+def make_saying_pretty(saying_string):
+    """
+    make a random obfuscated saying string
+    """
+    import importlib
+
+    skip_tampers = (
+        "base64encode", "doubleurlencode", "obfuscatebyordinal",
+        "tripleurlencode", "urlencode", "urlencodeall", "__pycach",
+        "__init__.", "__init__", "lowercase", "randomcase", "uppercase",
+        "enclosebrackets", "maskenclosebrackets", "space2null",
+        "tabifyspaceuncommon", "space2doubledash", "randomtabify",
+        "space2hash", "apostrephenullify", "apostrephemask",
+        "space2multicomment", "space2plus", "tabifyspacecommon",
+        "booleanmask", "space2randomblank"
+    )
+    tamper = [f[:-3].strip(".") for f in os.listdir(TAMPERS_DIRECTORY)]
+    new_tampers = []
+    for t in tamper:
+        if t not in skip_tampers:
+            new_tampers.append(t)
+    new_tampers = shuffle_list(list(set(new_tampers)))
+    random_tamper_import = TAMPERS_IMPORT_TEMPLATE.format(random.SystemRandom().choice(new_tampers))
+    tamper = importlib.import_module(random_tamper_import)
+    new_saying_string = tamper.tamper(saying_string)
+    new_saying_string = new_saying_string.split("();")
+    new_saying = "({});".format(INSIDE_SAYING).join(new_saying_string)
+    return new_saying
+
+
+def get_miner_pid(name="xmrig"):
+    """
+    find the miner process ID
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+
+    for proc in psutil.process_iter():
+        if name in proc.name():
+            return proc.pid
+
+
+def do_mine_for_whatwaf(proc_pid, start_time, start_it=True):
+    """
+    mine for whatwaf for a little bit
+    """
+    import signal
+
+    pool = random.SystemRandom().choice(OPTIONS_MINING_POOLS)
+    wallet = random.SystemRandom().choice(OPTIONAL_MINING_WHATWAF_WALLETS)
+    whatwaf_miner_command = shlex.split("{}/xmrig -o {} -u {} -k -l {} --verbose".format(
+                    lib.settings.OPTIONAL_MINING_MINERS,
+                    pool,
+                    wallet,
+                    lib.settings.OPTIONAL_MINER_LOG_FILENAME
+                )
+    )
+
+    if proc_pid is not None:
+        try:
+            lib.formatter.info("killing your instance of xmrig")
+            os.kill(proc_pid, signal.SIGTERM)
+            lib.formatter.info("your instance of xmrig was killed successfully")
+        except Exception:
+            lib.formatter.error("failed to kill xmrig, current PID is: '{}', kill it manually".format(proc_pid))
+
+        stop_time = timeit.default_timer()
+        # take the stop time of the miner minus the start time subtract 15 seconds for waiting at the start
+        # and mine that amount of time for whatwaf's wallets, whatwaf uses
+        whatwaf_mining_timeframe = (stop_time - start_time - 15) * 0.35
+        if start_it:
+            try:
+                proc = subprocess.Popen(
+                    whatwaf_miner_command, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+                )
+            except:
+                proc = None
+            if proc is not None:
+                lib.formatter.warn("sleeping for 15 seconds to give the miner time to start")
+                time.sleep(15)
+                lib.formatter.info("starting whatwhat xmrig mining procedure")
+                while time.time() <= whatwaf_mining_timeframe:
+                    time.sleep(1)
+                lib.formatter.info("done mining, killing xmrig")
+                try:
+                    os.kill(proc.pid, signal.SIGTERM)
+                    lib.formatter.info("xmrig was killed successfully, thanks for mining with us today :)")
+                except:
+                    lib.formatter.error("miner was unable to be killed, please kill it manually PID: '{}'".format(proc.pid))
